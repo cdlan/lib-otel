@@ -1,0 +1,7 @@
+# IDE
+.idea
+.fleet
+.vscode
+
+# MacOS
+.DS_Store
