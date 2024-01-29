@@ -3,40 +3,62 @@ package otel
 import (
 	"context"
 	"fmt"
+	"log"
+	"time"
+
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
-	"go.opentelemetry.io/otel/sdk/resource"
-	"go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.17.0"
-	tra "go.opentelemetry.io/otel/trace"
+	"go.opentelemetry.io/otel/propagation"
+	sdkresource "go.opentelemetry.io/otel/sdk/resource"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	semconv "go.opentelemetry.io/otel/semconv/v1.24.0"
+	"go.opentelemetry.io/otel/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
-	"time"
 )
 
-func (c *Config) NewTracerProvider() (exp trace.SpanExporter, err error) {
+// Init initialize the OTEL system
+func (C *Config) Init(serviceName string, serviceVersion string) error {
 
-	switch c.Exporter {
+	// if not enabled -> return
+	if !C.Enabled {
+		return nil
+	}
+
+	// create exporter
+	exporter, err := C.NewSpanExporter()
+	if err != nil {
+		return err
+	}
+
+	// create resource
+	resource := C.NewResource(serviceName, serviceVersion)
+
+	// create tracer provider
+	C.NewTracerProvider(resource, exporter)
+
+	return nil
+}
+
+func (C *Config) NewSpanExporter() (exp sdktrace.SpanExporter, err error) {
+
+	switch C.Exporter {
 
 	case stdout:
 		exp, err = stdouttrace.New(stdouttrace.WithPrettyPrint())
 		break
 	case otlp:
-		exp, err = c.NewOTLPTracerProvider()
-		break
-	case file:
-		err = fmt.Errorf("not Implemented yet")
+		exp, err = C.NewOTLPExporter()
 		break
 	default:
-		err = fmt.Errorf("unknown exporter: %v", c.Exporter)
+		err = fmt.Errorf("unknown exporter: %v", C.Exporter)
 		break
 	}
 
 	return exp, err
 }
-
-func (c *Config) NewOTLPTracerProvider() (exp trace.SpanExporter, err error) {
+func (C *Config) NewOTLPExporter() (exp sdktrace.SpanExporter, err error) {
 
 	ctx := context.Background()
 
@@ -44,7 +66,7 @@ func (c *Config) NewOTLPTracerProvider() (exp trace.SpanExporter, err error) {
 	ctx, cancel := context.WithTimeout(ctx, time.Second)
 	defer cancel()
 
-	conn, err := grpc.DialContext(ctx, c.OtlpCollectorUrl,
+	conn, err := grpc.DialContext(ctx, C.OtlpCollectorUrl,
 		// Note the use of insecure transport here. TLS is recommended in production.
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithBlock(),
@@ -56,44 +78,65 @@ func (c *Config) NewOTLPTracerProvider() (exp trace.SpanExporter, err error) {
 	return otlptracegrpc.New(ctx, otlptracegrpc.WithGRPCConn(conn))
 }
 
-func (c *Config) NewResource(serviceName string, serviceVersion string) *resource.Resource {
+// NewResource creates a new resource
+func (C *Config) NewResource(serviceName string, serviceVersion string) *sdkresource.Resource {
 
-	r, _ := resource.Merge(
-		resource.Default(),
-		resource.NewWithAttributes(
+	r, err := sdkresource.Merge(
+		sdkresource.Default(),
+		sdkresource.NewWithAttributes(
 			semconv.SchemaURL,
 			semconv.ServiceName(serviceName),
 			semconv.ServiceVersion(serviceVersion),
 		),
 	)
+
+	if err != nil {
+		log.Println("ERROR: could not create resource: ", err)
+	}
+
 	return r
 }
 
-func (c *Config) InitTracerProvider(res *resource.Resource, exp trace.SpanExporter) {
+// NewTracerProvider creates the tracer provider and saves it to the state struct
+func (C *Config) NewTracerProvider(resource *sdkresource.Resource, spanExporter sdktrace.SpanExporter) {
 
-	// Register the trace exporter with a TracerProvider, using a batch
-	// span processor to aggregate spans before export.
-	bsp := trace.NewBatchSpanProcessor(exp)
-	tracerProvider := trace.NewTracerProvider(
-		trace.WithSampler(trace.AlwaysSample()),
-		trace.WithResource(res),
-		trace.WithSpanProcessor(bsp),
+	// batch span processor to aggregate spans before export.
+	batchSpanProcessor := sdktrace.NewBatchSpanProcessor(spanExporter)
+
+	// create tracer provider
+	tracerProvider := sdktrace.NewTracerProvider(
+		sdktrace.WithSampler(sdktrace.AlwaysSample()),
+		sdktrace.WithResource(resource),
+		sdktrace.WithSpanProcessor(batchSpanProcessor),
 	)
 
-	c.tp = tracerProvider
+	// save tracerProvider to state
+	state.tracerProvider = tracerProvider
 
 	// set tp as a global tracer provider
 	otel.SetTracerProvider(tracerProvider)
-	//otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
+
+	// setup propagation
+	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(propagation.TraceContext{}, propagation.Baggage{}))
 }
 
-func (c *Config) ShutdownTracerProvider(ctx context.Context) error {
-	return c.tp.Shutdown(ctx)
+// ShutdownTracerProvider closes the tracer provider and flushes traces
+// to be called when program exits
+func (C *Config) ShutdownTracerProvider(ctx context.Context) error {
+
+	// if not enabled -> return
+	if !C.Enabled {
+		return nil
+	}
+
+	// close tracer provider
+	return state.tracerProvider.Shutdown(ctx)
 }
 
-func (c *Config) NewSpan(ctx context.Context, spanName string) (context.Context, tra.Span) {
+// NewSpan creates a new span if otel is enabled
+func (C *Config) NewSpan(ctx context.Context, spanName string) (context.Context, trace.Span) {
 
-	if !c.Enabled {
+	if !C.Enabled {
 		return ctx, nil
 	}
 
@@ -109,9 +152,9 @@ func (c *Config) NewSpan(ctx context.Context, spanName string) (context.Context,
 }
 
 // RecordError records error to span only if otel is enabled, removing nullpointer exceptions
-func (c *Config) RecordError(span tra.Span, err error) {
+func (C *Config) RecordError(span trace.Span, err error) {
 
-	if c.Enabled {
+	if C.Enabled {
 		span.RecordError(err)
 	}
 }

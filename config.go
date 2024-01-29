@@ -2,7 +2,6 @@ package otel
 
 import (
 	"fmt"
-	"go.opentelemetry.io/otel/sdk/trace"
 	"os"
 	"strconv"
 )
@@ -11,25 +10,22 @@ type ExporterType int
 
 const (
 	stdout ExporterType = iota
-	file
 	otlp
 )
 
 type Config struct {
-	tp               *trace.TracerProvider
 	Enabled          bool         `mapstructure:"enabled"`
 	Exporter         ExporterType `mapstructure:"exporter"`
 	OtlpCollectorUrl string       `mapstructure:"collector_url"`
 }
 
-func Default() Config {
-	return Config{
-		Enabled:  false,
-		Exporter: stdout,
-	}
+func (C *Config) Default() {
+
+	C.Enabled = false
+	C.Exporter = stdout
 }
 
-func (c *Config) LoadVarsFromEnv() {
+func (C *Config) LoadVarsFromEnv() {
 
 	enabled, ok := os.LookupEnv("OTEL_ENABLED")
 	if ok {
@@ -41,7 +37,7 @@ func (c *Config) LoadVarsFromEnv() {
 			boolEn = false
 		}
 
-		c.Enabled = boolEn
+		C.Enabled = boolEn
 	}
 
 	exporter, ok := os.LookupEnv("OTEL_EXPORTER")
@@ -54,11 +50,11 @@ func (c *Config) LoadVarsFromEnv() {
 			u = 0
 		}
 
-		c.Exporter = ExporterType(u)
+		C.Exporter = ExporterType(u)
 	}
 
 	url, ok := os.LookupEnv("OTEL_COLLECTOR_URL")
 	if ok {
-		c.OtlpCollectorUrl = url
+		C.OtlpCollectorUrl = url
 	}
 }

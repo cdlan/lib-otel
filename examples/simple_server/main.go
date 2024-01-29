@@ -1,13 +1,3 @@
-# otel
-Go module that wraps the OpenTelemetry module.
-
-## Install
-```shell
-go get github.com/cdlan/lib-otel
-```
-
-## Usage
-```go
 package main
 
 import (
@@ -93,4 +83,3 @@ func main() {
 		log.Fatalf("Failed to serve grpc: %v", err)
 	}
 }
-```
